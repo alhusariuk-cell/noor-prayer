@@ -1,0 +1,22 @@
+{
+  "package_id": "com.noor.prayer",
+  "edition": "202601",
+  "name": "Noor Prayer",
+  "version": "1.2.2",
+  "min_app_version": "1.0.0",
+  "min_sdk_version": "0.0.10",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Fetch prayer times from Aladhan API and London Prayer Times API",
+      "whitelist": [
+        "https://api.aladhan.com",
+        "https://www.londonprayertimes.com"
+      ]
+    }
+  ],
+  "supported_languages": [
+    "en"
+  ]
+}

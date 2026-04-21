@@ -1,0 +1,22 @@
+{
+  "name": "noor-quran",
+  "version": "1.0.0",
+  "description": "Quran reader plugin for Even Realities G2 smart glasses – renders Arabic text as greyscale images",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "simulator": "evenhub-simulator http://localhost:5173"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "latest",
+    "canvas": "^3.2.3"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "latest",
+    "@evenrealities/evenhub-simulator": "latest",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.0"
+  }
+}
