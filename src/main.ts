@@ -349,7 +349,7 @@ const renderMainScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8Array
   drawSeparator(ctx, IMG_H - 14)
   ctx.font = FONT_HINT; ctx.fillStyle = '#444'
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-  ctx.fillText('double-tap: next screen', IMG_W / 2, IMG_H - 2)
+  ctx.fillText('tap: next screen  |  double-tap: exit', IMG_W / 2, IMG_H - 2)
 
   return sliceQuadrants(canvas)
 }
@@ -431,7 +431,7 @@ const renderCountdownScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8
   drawSeparator(ctx, IMG_H - 14)
   ctx.font = FONT_HINT; ctx.fillStyle = '#444'
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-  ctx.fillText('double-tap: next screen', IMG_W / 2, IMG_H - 2)
+  ctx.fillText('tap: next screen  |  double-tap: exit', IMG_W / 2, IMG_H - 2)
 
   return sliceQuadrants(canvas)
 }
@@ -504,7 +504,7 @@ const renderCalendarScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8A
     drawSeparator(ctx, sepY)
     ctx.font = FONT_HINT; ctx.fillStyle = '#444'
     ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-    ctx.fillText('double-tap: next screen', IMG_W / 2, IMG_H - 2)
+    ctx.fillText('tap: next screen  |  double-tap: exit', IMG_W / 2, IMG_H - 2)
   }
 
   return sliceQuadrants(canvas)
@@ -687,9 +687,9 @@ const setupSettingsUI = () => {
     const evType = resolveEventType(event)
     if (evType === null) return
 
-    // Hardware confirmed: double-tap fires sysEvent.eventType = 3
-    // Cycle screens on every type-3 event
-    if (evType === 3) {
+    // Single tap (0) → cycle screens
+    // Double tap (3) → exit plugin
+    if (evType === 0) {
       const idx     = SCREENS.indexOf(currentScreen)
       const nextScr = SCREENS[(idx + 1) % SCREENS.length]
       currentScreen = nextScr
@@ -697,6 +697,8 @@ const setupSettingsUI = () => {
       if (nextScr === 'main'      && cachedMainTiles)      await sendTiles(cachedMainTiles)
       if (nextScr === 'countdown' && cachedCountdownTiles) await sendTiles(cachedCountdownTiles)
       if (nextScr === 'calendar'  && cachedCalendarTiles)  await sendTiles(cachedCalendarTiles)
+    } else if (evType === 3) {
+      await bridge.shutDownPageContainer(0)
     }
   })
 
