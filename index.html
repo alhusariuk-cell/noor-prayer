@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Noor – Prayer Times for G2</title>
+  <title>Noor Prayer</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -12,7 +12,6 @@
       --surface:  #1a1a1a;
       --border:   #2e2e2e;
       --accent:   #ffcc00;
-      --accent2:  #f9a825;
       --text:     #e8e8e8;
       --muted:    #888;
       --danger:   #ef5350;
@@ -25,9 +24,10 @@
       color: var(--text);
       font-family: 'Segoe UI', system-ui, sans-serif;
       font-size: 15px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
-    /* ── Layout ─────────────────────────────────────────── */
     .app {
       max-width: 480px;
       margin: 0 auto;
@@ -44,189 +44,156 @@
       z-index: 10;
       background: var(--bg);
       border-bottom: 1px solid var(--border);
-      padding: 14px 16px 14px;
+      padding: 14px 16px;
     }
     .header-top {
       display: flex;
       align-items: center;
       justify-content: space-between;
     }
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
+    .logo { display: flex; align-items: center; gap: 10px; }
     .logo-icon {
       width: 36px; height: 36px;
-      border-radius: 8px;
-      overflow: hidden;
-      flex-shrink: 0;
+      border-radius: 8px; overflow: visible; flex-shrink: 0;
     }
-    .logo-icon img {
-      width: 100%; height: 100%;
-      object-fit: cover;
-    }
-    .logo-text h1 {
-      font-size: 1.1rem;
-      font-weight: 700;
-      color: var(--text);
-    }
+    .logo-icon img { width: 100%; height: 100%; object-fit: cover; }
+    .logo-text h1 { font-size: 1.1rem; font-weight: 700; color: var(--text); }
     .logo-text h1 span { color: var(--accent); }
-    .logo-text p {
-      font-size: 0.72rem;
-      color: var(--muted);
-    }
+    .logo-text p { font-size: 0.72rem; color: var(--muted); }
+    .header-right { display: flex; align-items: center; gap: 8px; }
     .status-badge {
-      font-size: 0.72rem;
-      padding: 3px 10px;
-      border-radius: 20px;
-      background: #2a2200;
-      color: var(--accent);
-      border: 1px solid #4a3a00;
+      font-size: 0.72rem; padding: 3px 10px; border-radius: 20px;
+      background: #2a2200; color: var(--accent); border: 1px solid #4a3a00;
     }
     .status-badge.connecting { background: #2a2a1e; color: #ffd740; border-color: #5a4a1e; }
-    .status-badge.error      { background: #3a1e1e; color: var(--danger); border-color: #5a2a2a; }
+    .btn-exit-header {
+      font-size: 0.72rem; padding: 3px 10px; border-radius: 20px;
+      background: #3a1e1e; color: var(--danger); border: 1px solid #5a2a2a;
+      cursor: pointer; font-weight: 600;
+    }
+    .btn-exit-header:active { opacity: 0.75; }
 
-    /* ── City card ──────────────────────────────────────── */
-    .city-card {
+    /* ── Cards ──────────────────────────────────────────── */
+    .card {
       margin: 12px 16px 0;
       padding: 14px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
     }
-    .city-card-title {
-      font-size: 0.7rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 10px;
+    .card-title {
+      font-size: 0.7rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;
     }
-    .city-row {
-      display: flex;
-      gap: 8px;
-    }
+
+    /* ── City row ───────────────────────────────────────── */
+    .city-row { display: flex; gap: 8px; margin-bottom: 10px; }
     .city-row input[type="text"] {
-      flex: 1;
-      background: #111;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-size: 0.95rem;
-      padding: 9px 12px;
-      outline: none;
-      transition: border-color 0.2s;
+      flex: 1; background: #111; border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 0.95rem;
+      padding: 9px 12px; outline: none; transition: border-color 0.2s;
     }
     .city-row input[type="text"]:focus { border-color: var(--accent); }
     .city-row input[type="text"]::placeholder { color: var(--muted); }
+
+    /* ── Method select ──────────────────────────────────── */
+    .method-label {
+      font-size: 0.7rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      display: block; margin-bottom: 5px;
+    }
+    select {
+      width: 100%; background: #111; border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 0.88rem;
+      padding: 9px 12px; outline: none;
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23888' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px;
+    }
+    select:focus { border-color: var(--accent); }
+
+    /* ── Send button ────────────────────────────────────── */
     .btn-send {
-      padding: 9px 18px;
-      background: var(--accent);
-      color: #000;
-      border: none;
-      border-radius: 8px;
-      font-size: 0.88rem;
-      font-weight: 700;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: opacity 0.15s;
-      display: flex;
-      align-items: center;
-      gap: 5px;
+      padding: 9px 18px; background: var(--accent); color: #000;
+      border: none; border-radius: 8px; font-size: 0.88rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap; transition: opacity 0.15s;
+      display: flex; align-items: center; gap: 5px;
     }
     .btn-send:active { opacity: 0.7; }
     .btn-send.loading { opacity: 0.6; cursor: not-allowed; }
     .spinner {
-      display: none;
-      width: 13px; height: 13px;
-      border: 2px solid #000;
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+      display: none; width: 13px; height: 13px;
+      border: 2px solid #000; border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Status message ─────────────────────────────────── */
     .status-msg {
-      margin: 8px 16px 0;
-      padding: 9px 14px;
-      border-radius: 8px;
-      font-size: 0.82rem;
-      display: none;
+      margin: 8px 16px 0; padding: 9px 14px;
+      border-radius: 8px; font-size: 0.82rem; display: none;
     }
     .status-msg.success { display: block; background: #0d2b0d; color: #4caf50; border: 1px solid #1a4a1a; }
     .status-msg.error   { display: block; background: #2b0d0d; color: #f44336; border: 1px solid #4a1a1a; }
     .status-msg.info    { display: block; background: #1a1500; color: var(--accent); border: 1px solid #3a3000; }
 
-    /* ── Info card ──────────────────────────────────────── */
-    .info-card {
-      margin: 10px 16px 0;
-      padding: 14px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
+    /* ── Screen buttons ─────────────────────────────────── */
+    .screen-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .btn-screen {
+      background: #111; border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 6px; text-align: center;
+      cursor: pointer; transition: background 0.15s, border-color 0.15s; color: var(--text);
     }
-    .info-card-title {
-      font-size: 0.7rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 10px;
-    }
-    .info-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
+    .btn-screen:active { opacity: 0.7; }
+    .btn-screen.active { background: #2a2200; border-color: var(--accent); }
+    .btn-screen .scr-icon { font-size: 22px; margin-bottom: 4px; }
+    .btn-screen .scr-name { font-size: 0.72rem; color: var(--muted); }
+    .btn-screen.active .scr-name { color: var(--accent); }
+
+    /* ── Info grid ──────────────────────────────────────── */
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .info-item label {
-      font-size: 0.68rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      display: block;
-      margin-bottom: 2px;
+      font-size: 0.68rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      display: block; margin-bottom: 2px;
     }
-    .info-item span {
-      font-size: 0.82rem;
-      color: var(--text);
-      font-weight: 500;
-      word-break: break-word;
-    }
+    .info-item span { font-size: 0.82rem; color: var(--text); font-weight: 500; word-break: break-word; }
 
-    /* ── Hint ───────────────────────────────────────────── */
-    .hint {
-      margin: 14px 16px 0;
-      font-size: 0.75rem;
-      color: var(--muted);
-      line-height: 1.6;
-      text-align: center;
-    }
-
-    /* ── Version ────────────────────────────────────────── */
-    .version {
-      margin: 20px 16px 0;
-      font-size: 0.68rem;
-      color: #333;
-      text-align: center;
-    }
+    /* ── Hint / version ─────────────────────────────────── */
+    .hint { margin: 14px 16px 0; font-size: 0.75rem; color: var(--muted); line-height: 1.6; text-align: center; }
+    .version { margin: 20px 16px 0; font-size: 0.68rem; color: #333; text-align: center; }
 
     /* ── Toast ──────────────────────────────────────────── */
     .toast {
-      position: fixed;
-      bottom: 20px;
-      left: 50%;
+      position: fixed; bottom: 20px; left: 50%;
       transform: translateX(-50%) translateY(80px);
-      background: #1a1500;
-      color: var(--accent);
-      border: 1px solid #3a3000;
-      padding: 10px 20px;
-      border-radius: 20px;
-      font-size: 0.85rem;
-      transition: transform 0.25s ease;
-      z-index: 100;
-      white-space: nowrap;
+      background: #1a1500; color: var(--accent); border: 1px solid #3a3000;
+      padding: 10px 20px; border-radius: 20px; font-size: 0.85rem;
+      transition: transform 0.25s ease; z-index: 100; white-space: nowrap;
     }
     .toast.show { transform: translateX(-50%) translateY(0); }
+
+    /* ── Exit modal ─────────────────────────────────────── */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal-box {
+      background: #1a1a1a; border: 1px solid #2e2e2e;
+      border-radius: 16px; padding: 24px 20px;
+      width: 88%; max-width: 340px; text-align: center;
+    }
+    .modal-title { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+    .modal-sub   { font-size: 13px; color: #888; margin-bottom: 20px; }
+    .modal-btns  { display: flex; gap: 10px; }
+    .modal-btns button {
+      flex: 1; padding: 12px; border-radius: 10px;
+      font-size: 15px; font-weight: 600; cursor: pointer; border: none;
+    }
+    .btn-exit-confirm { background: #c62828; color: #fff; }
+    .btn-cancel       { background: #2a2a2a; color: #ccc; }
   </style>
 </head>
 <body>
@@ -236,21 +203,22 @@
   <div class="header">
     <div class="header-top">
       <div class="logo">
-        <div class="logo-icon">
-          <img src="/icon-prayer-72.png" alt="Prayer icon" />
-        </div>
+        <div class="logo-icon"><img src="/icon-prayer-72.png" alt="Prayer icon" /></div>
         <div class="logo-text">
           <h1>Noor <span>Prayer</span></h1>
           <p>Even Realities G2</p>
         </div>
       </div>
-      <span class="status-badge connecting" id="statusBadge">Connecting…</span>
+      <div class="header-right">
+        <span class="status-badge connecting" id="statusBadge">Connecting…</span>
+        <button class="btn-exit-header" onclick="showExitDialog()">✕ Exit</button>
+      </div>
     </div>
   </div>
 
-  <!-- City input -->
-  <div class="city-card">
-    <div class="city-card-title">Your City</div>
+  <!-- Settings card -->
+  <div class="card">
+    <div class="card-title">Settings</div>
     <div class="city-row">
       <input type="text" id="cityInput" placeholder="e.g. London, Dubai, Mecca" autocomplete="off" />
       <button class="btn-send" id="startBtn" onclick="saveAndStart()">
@@ -258,75 +226,164 @@
         <span id="startLabel">Show on Glasses</span>
       </button>
     </div>
+    <label class="method-label" for="methodSelect">Calculation Method</label>
+    <select id="methodSelect">
+      <option value="-1">London (ICCUK — most accurate for UK)</option>
+      <option value="0">Shia Ithna-Ansari</option>
+      <option value="1">University of Islamic Sciences, Karachi</option>
+      <option value="2">Islamic Society of North America (ISNA)</option>
+      <option value="3">Muslim World League (MWL)</option>
+      <option value="4">Umm Al-Qura, Makkah</option>
+      <option value="5">Egyptian General Authority of Survey</option>
+      <option value="7">Institute of Geophysics, Tehran</option>
+      <option value="8">Gulf Region</option>
+      <option value="9">Kuwait</option>
+      <option value="10">Qatar</option>
+      <option value="11">Majlis Ugama Islam Singapura, Singapore</option>
+      <option value="12">Union Organization Islamic de France (UOIF)</option>
+      <option value="13">Diyanet İşleri Başkanlığı, Turkey</option>
+      <option value="14">Spiritual Administration of Muslims of Russia</option>
+      <option value="15">Moonsighting Committee Worldwide (MCW)</option>
+      <option value="16">Dubai (experimental)</option>
+      <option value="17">Jabatan Kemajuan Islam Malaysia (JAKIM)</option>
+      <option value="18">Tunisia</option>
+      <option value="19">Algeria</option>
+      <option value="20">KEMENAG, Indonesia</option>
+      <option value="21">Morocco</option>
+      <option value="22">Comunidade Islamica de Lisboa</option>
+      <option value="23">Ministry of Awqaf, Jordan</option>
+    </select>
   </div>
 
   <!-- Status message -->
   <div class="status-msg" id="status"></div>
 
+  <!-- Live screen buttons -->
+  <div class="card">
+    <div class="card-title">Switch Screen on Glasses</div>
+    <div class="screen-btns">
+      <button class="btn-screen active" id="btn-main"      onclick="switchScreen('main')">
+        <div class="scr-icon">🕌</div>
+        <div class="scr-name">Prayer List</div>
+      </button>
+      <button class="btn-screen"        id="btn-countdown" onclick="switchScreen('countdown')">
+        <div class="scr-icon">⏱</div>
+        <div class="scr-name">Countdown</div>
+      </button>
+      <button class="btn-screen"        id="btn-calendar"  onclick="switchScreen('calendar')">
+        <div class="scr-icon">📅</div>
+        <div class="scr-name">Calendar</div>
+      </button>
+    </div>
+  </div>
+
   <!-- Current settings -->
-  <div class="info-card">
-    <div class="info-card-title">Current Settings</div>
+  <div class="card">
+    <div class="card-title">Current Settings</div>
     <div class="info-grid">
-      <div class="info-item">
-        <label>City</label>
-        <span id="currentCity">—</span>
-      </div>
-      <div class="info-item">
-        <label>Timezone</label>
-        <span id="timezone">—</span>
-      </div>
-      <div class="info-item">
-        <label>Source</label>
-        <span id="source">—</span>
-      </div>
-      <div class="info-item">
-        <label>Version</label>
-        <span id="versionSpan">—</span>
-      </div>
+      <div class="info-item"><label>City</label><span id="currentCity">—</span></div>
+      <div class="info-item"><label>Timezone</label><span id="timezone">—</span></div>
+      <div class="info-item"><label>Source</label><span id="source">—</span></div>
+      <div class="info-item"><label>Version</label><span id="versionSpan">—</span></div>
     </div>
   </div>
 
   <!-- Hint -->
   <div class="hint">
-    Double-tap on glasses to cycle between prayer list, countdown, and calendar.<br/>
-    Times refresh automatically at midnight.
+    Tap a screen button above to switch the glasses display directly.<br/>
+    Single-tap on glasses to cycle screens · Double-tap to exit.
   </div>
 
   <div class="version" id="versionFooter">Noor Prayer</div>
-
 </div>
 
-<!-- Toast notification -->
+<!-- Toast -->
 <div class="toast" id="toast"></div>
+
+<!-- Exit modal -->
+<div class="modal-overlay" id="exitModal">
+  <div class="modal-box">
+    <div class="modal-title">Exit Noor Prayer?</div>
+    <div class="modal-sub">Your settings will be saved.</div>
+    <div class="modal-btns">
+      <button class="btn-exit-confirm" onclick="confirmExit()">Exit</button>
+      <button class="btn-cancel"       onclick="cancelExit()">No, Stay</button>
+    </div>
+  </div>
+</div>
 
 <script type="module" src="/src/main.ts"></script>
 <script>
 function showToast(msg) {
-  const t = document.getElementById('toast')
+  var t = document.getElementById('toast')
   t.textContent = msg
   t.classList.add('show')
-  setTimeout(() => t.classList.remove('show'), 2200)
+  setTimeout(function() { t.classList.remove('show') }, 2200)
 }
 
-// Poll for noor readiness
-function pollNoor() {
-  const badge = document.getElementById('statusBadge')
-  if (window.noor) {
+// ── Exit dialog ──────────────────────────────────────────────────────────────
+function showExitDialog() {
+  document.getElementById('exitModal').classList.add('show')
+  if (window.history && window.history.pushState)
+    window.history.pushState({ modal: 'exit' }, '')
+}
+function cancelExit() {
+  document.getElementById('exitModal').classList.remove('show')
+}
+function confirmExit() {
+  document.getElementById('exitModal').classList.remove('show')
+  if (window.noor && window.noor.exit) window.noor.exit()
+}
+window.addEventListener('popstate', function() {
+  var modal = document.getElementById('exitModal')
+  if (modal.classList.contains('show')) modal.classList.remove('show')
+  else showExitDialog()
+})
+
+// ── Screen switcher ──────────────────────────────────────────────────────────
+function switchScreen(scr) {
+  if (!window.noor || !window.noor.switchScreen) {
+    showToast('Not connected yet')
+    return
+  }
+  window.noor.switchScreen(scr)
+  var screens = ['main', 'countdown', 'calendar']
+  screens.forEach(function(s) {
+    var el = document.getElementById('btn-' + s)
+    if (el) el.classList.toggle('active', s === scr)
+  })
+}
+
+// ── Connection poll ──────────────────────────────────────────────────────────
+var _pollInterval = setInterval(function() {
+  var badge = document.getElementById('statusBadge')
+  if (!badge) { clearInterval(_pollInterval); return }
+  if (window.noor && window.noor.version) {
     badge.textContent = 'Connected'
     badge.className = 'status-badge'
-    // Populate version
-    const v = window.noor.version || ''
+    var v = window.noor.version || ''
     if (v) {
       document.getElementById('versionSpan').textContent = v
       document.getElementById('versionFooter').textContent = 'Noor Prayer ' + v
     }
+    // Restore saved method in dropdown
+    var ms = document.getElementById('methodSelect')
+    if (ms && window.noor.getMethod) {
+      var m = window.noor.getMethod()
+      if (m !== null && m !== undefined) ms.value = String(m)
+    }
+    // Restore saved city
+    var ci = document.getElementById('cityInput')
+    if (ci && window.noor.getCity) {
+      var c = window.noor.getCity()
+      if (c) ci.value = c.charAt(0).toUpperCase() + c.slice(1)
+    }
+    clearInterval(_pollInterval)
   } else {
     badge.textContent = 'Connecting…'
     badge.className = 'status-badge connecting'
   }
-  setTimeout(pollNoor, 500)
-}
-pollNoor()
+}, 500)
 </script>
 </body>
 </html>

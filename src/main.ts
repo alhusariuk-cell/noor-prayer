@@ -38,6 +38,27 @@ const FONT_CAL_HDR   = '11px sans-serif'      // Su Mo Tu … headers
 // Screen cycle order
 const SCREENS = ['main', 'countdown', 'calendar'] as const
 type Screen = typeof SCREENS[number]
+// ─── Render queue — prevents BLE bandwidth saturation ────────────────────────
+// Rapid events (swipes) are coalesced: only the latest render is sent.
+let _renderRunning = false
+let _renderPending: (() => Promise<void>) | null = null
+
+async function drainRenderQueue(): Promise<void> {
+  while (_renderPending) {
+    const fn = _renderPending
+    _renderPending = null
+    try { await fn() } catch (e) { console.error('[Prayer] render error:', e) }
+  }
+  _renderRunning = false
+}
+
+function enqueueRender(fn: () => Promise<void>): void {
+  _renderPending = fn  // overwrite: only latest render matters
+  if (!_renderRunning) {
+    _renderRunning = true
+    drainRenderQueue()
+  }
+}
 
 // ─── Event resolver ───────────────────────────────────────────────────────────
 function resolveEventType(event: any): number | null {
@@ -53,6 +74,15 @@ function resolveEventType(event: any): number | null {
     const resolved = OsEventTypeList.fromJson(raw)
     if (resolved !== null && resolved !== undefined) return resolved as number
     if (typeof raw === 'number') return raw
+  }
+  // G2 single tap sends sysEvent/jsonData with eventSource but NO eventType.
+  // Treat this as CLICK_EVENT (0).
+  if (
+    (event?.sysEvent?.eventSource !== undefined || event?.jsonData?.eventSource !== undefined) &&
+    event?.sysEvent?.eventType === undefined &&
+    event?.jsonData?.eventType === undefined
+  ) {
+    return 0
   }
   return null
 }
@@ -133,17 +163,180 @@ const makeCanvas = (w: number, h: number): CanvasPair => {
   return [c, ctx]
 }
 
-const canvasToPngBytes = (canvas: HTMLCanvasElement): Uint8Array => {
-  const b64 = canvas.toDataURL('image/png').split(',')[1]
-  const bin = atob(b64)
-  const bytes = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  return bytes
+/**
+ * Encode canvas to 8-bit palette PNG → number[].
+ *
+ * Our canvases use only a handful of flat colours (black bg, white/grey/
+ * yellow/green text). Switching from 32-bit RGBA to 8-bit indexed PNG
+ * reduces each quadrant from ~20 KB to ~4 KB, cutting BLE payload ~5×.
+ *
+ * iOS-safe: no spread operators on large arrays (avoids WKWebView stack overflow).
+ * Returns number[] (List<int>) for the Dart bridge — same contract as before.
+ */
+const canvasToPngBytes = (canvas: HTMLCanvasElement): number[] => {
+  const w = canvas.width, h = canvas.height
+  const ctx2 = canvas.getContext('2d')!
+  const imgData = ctx2.getImageData(0, 0, w, h).data  // Uint8ClampedArray RGBA
+
+  // ── Build palette (max 256 unique RGBA colours) ──────────────────────────
+  const colourMap = new Map<number, number>()
+  const palette: number[] = []  // flat [R,G,B,A, ...]
+
+  const packRGBA = (r: number, g: number, b: number, a: number) =>
+    ((r << 24) | (g << 16) | (b << 8) | a) >>> 0
+
+  for (let i = 0; i < imgData.length; i += 4) {
+    const key = packRGBA(imgData[i], imgData[i+1], imgData[i+2], imgData[i+3])
+    if (!colourMap.has(key)) {
+      if (colourMap.size >= 256) break
+      colourMap.set(key, colourMap.size)
+      palette.push(imgData[i], imgData[i+1], imgData[i+2], imgData[i+3])
+    }
+  }
+  const palSize = colourMap.size
+
+  // ── Build indexed pixel array ─────────────────────────────────────────────
+  const rowLen = 1 + w
+  const raw = new Uint8Array(rowLen * h)
+  for (let y = 0; y < h; y++) {
+    raw[y * rowLen] = 0  // filter type None
+    for (let x = 0; x < w; x++) {
+      const pi = (y * w + x) * 4
+      const key = packRGBA(imgData[pi], imgData[pi+1], imgData[pi+2], imgData[pi+3])
+      raw[y * rowLen + 1 + x] = colourMap.get(key) ?? 0
+    }
+  }
+
+  // ── zlib (uncompressed deflate blocks) ───────────────────────────────────
+  const zlibData = deflateUncompressed(raw)
+
+  // ── PNG helpers ───────────────────────────────────────────────────────────
+  const crc32Table = (() => {
+    const t = new Uint32Array(256)
+    for (let i = 0; i < 256; i++) {
+      let c = i
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+      t[i] = c
+    }
+    return t
+  })()
+
+  const crc32 = (buf: Uint8Array): number => {
+    let c = 0xFFFFFFFF
+    for (let i = 0; i < buf.length; i++) c = crc32Table[(c ^ buf[i]) & 0xFF] ^ (c >>> 8)
+    return (c ^ 0xFFFFFFFF) >>> 0
+  }
+
+  const u32be = (n: number, out: number[], off: number) => {
+    out[off]   = (n >>> 24) & 0xFF
+    out[off+1] = (n >>> 16) & 0xFF
+    out[off+2] = (n >>> 8)  & 0xFF
+    out[off+3] =  n         & 0xFF
+  }
+
+  // Build a PNG chunk: length(4) + type(4) + data(n) + crc32(type+data)(4)
+  const chunk = (type: string, data: number[]): number[] => {
+    const dlen = data.length
+    // CRC covers type + data
+    const crcBuf = new Uint8Array(4 + dlen)
+    crcBuf[0] = type.charCodeAt(0); crcBuf[1] = type.charCodeAt(1)
+    crcBuf[2] = type.charCodeAt(2); crcBuf[3] = type.charCodeAt(3)
+    for (let i = 0; i < dlen; i++) crcBuf[4 + i] = data[i]
+    const c = crc32(crcBuf)
+    // Assemble: length(4) + type(4) + data(n) + crc(4)
+    const result: number[] = new Array(4 + 4 + dlen + 4)
+    u32be(dlen, result, 0)
+    result[4] = type.charCodeAt(0); result[5] = type.charCodeAt(1)
+    result[6] = type.charCodeAt(2); result[7] = type.charCodeAt(3)
+    for (let i = 0; i < dlen; i++) result[8 + i] = data[i]
+    u32be(c, result, 8 + dlen)
+    return result
+  }
+
+  // ── IHDR ─────────────────────────────────────────────────────────────────
+  const ihdrData: number[] = new Array(13)
+  u32be(w, ihdrData, 0); u32be(h, ihdrData, 4)
+  ihdrData[8] = 8; ihdrData[9] = 3; ihdrData[10] = 0; ihdrData[11] = 0; ihdrData[12] = 0
+  const ihdr = chunk('IHDR', ihdrData)
+
+  // ── PLTE ─────────────────────────────────────────────────────────────────
+  const plteData: number[] = new Array(palSize * 3)
+  for (let i = 0; i < palSize; i++) {
+    plteData[i*3]   = palette[i*4]
+    plteData[i*3+1] = palette[i*4+1]
+    plteData[i*3+2] = palette[i*4+2]
+  }
+  const plte = chunk('PLTE', plteData)
+
+  // ── tRNS ─────────────────────────────────────────────────────────────────
+  const trnsData: number[] = new Array(palSize)
+  for (let i = 0; i < palSize; i++) trnsData[i] = palette[i*4+3]
+  const trns = chunk('tRNS', trnsData)
+
+  // ── IDAT ─────────────────────────────────────────────────────────────────
+  const idatArr: number[] = new Array(zlibData.length)
+  for (let i = 0; i < zlibData.length; i++) idatArr[i] = zlibData[i]
+  const idat = chunk('IDAT', idatArr)
+
+  // ── IEND ─────────────────────────────────────────────────────────────────
+  const iend = chunk('IEND', [])
+
+  // ── Assemble PNG (no spread on large arrays) ──────────────────────────────
+  const parts = [
+    [137, 80, 78, 71, 13, 10, 26, 10],  // PNG signature
+    ihdr, plte, trns, idat, iend,
+  ]
+  let totalLen = 0
+  for (let p = 0; p < parts.length; p++) totalLen += parts[p].length
+  const result: number[] = new Array(totalLen)
+  let pos2 = 0
+  for (let p = 0; p < parts.length; p++) {
+    const part = parts[p]
+    for (let i = 0; i < part.length; i++) result[pos2++] = part[i]
+  }
+  return result
+}
+
+/** Build a zlib stream using uncompressed deflate blocks (no compression).
+ *  iOS-safe: no spread operators on large Uint8Array. */
+function deflateUncompressed(data: Uint8Array): Uint8Array {
+  const BLOCK = 65535
+  // Calculate total output size
+  const numBlocks = Math.ceil(data.length / BLOCK) || 1
+  const outLen = 2 + numBlocks * 5 + data.length + 4  // header + blocks + adler
+  const out = new Uint8Array(outLen)
+  out[0] = 0x78; out[1] = 0x01  // zlib header
+  let wp = 2, rp = 0
+  while (rp < data.length || wp === 2) {
+    const end  = Math.min(rp + BLOCK, data.length)
+    const len  = end - rp
+    const last = end >= data.length ? 1 : 0
+    out[wp++] = last
+    out[wp++] = len & 0xFF
+    out[wp++] = (len >> 8) & 0xFF
+    out[wp++] = (~len) & 0xFF
+    out[wp++] = ((~len) >> 8) & 0xFF
+    for (let i = rp; i < end; i++) out[wp++] = data[i]
+    rp = end
+    if (rp >= data.length) break
+  }
+  // Adler-32
+  let s1 = 1, s2 = 0
+  for (let i = 0; i < data.length; i++) {
+    s1 = (s1 + data[i]) % 65521
+    s2 = (s2 + s1) % 65521
+  }
+  const adler = (s2 << 16) | s1
+  out[wp++] = (adler >>> 24) & 0xFF
+  out[wp++] = (adler >>> 16) & 0xFF
+  out[wp++] = (adler >>> 8)  & 0xFF
+  out[wp]   =  adler         & 0xFF
+  return out
 }
 
 /** Slice the 400×200 canvas into 4 quadrant PNGs (TL, TR, BL, BR) */
-const sliceQuadrants = (canvas: HTMLCanvasElement): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] => {
-  const quad = (sx: number, sy: number): Uint8Array => {
+const sliceQuadrants = (canvas: HTMLCanvasElement): [number[], number[], number[], number[]] => {
+  const quad = (sx: number, sy: number): number[] => {
     const [t, tc] = makeCanvas(QUAD_W, QUAD_H)
     tc.drawImage(canvas, sx, sy, QUAD_W, QUAD_H, 0, 0, QUAD_W, QUAD_H)
     return canvasToPngBytes(t)
@@ -163,16 +356,13 @@ const drawSeparator = (ctx: CanvasRenderingContext2D, y: number, x0 = 4, x1 = IM
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
-const getPrayerData = async (city: string): Promise<PrayerData> => {
+const getPrayerData = async (city: string, method = -1): Promise<PrayerData> => {
   const today = new Date()
   const dd = String(today.getDate()).padStart(2, '0')
   const mm = String(today.getMonth() + 1).padStart(2, '0')
   const yyyy = today.getFullYear()
-  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-  const gregDate = `${days[today.getDay()]} ${today.getDate()} ${months[today.getMonth()]} ${yyyy}`
 
-  let prayers: Prayer[], cityLabel: string, timezone: string, hijriDate: string
+  let prayers: Prayer[], cityLabel: string, timezone: string, hijriDate: string, gregDate: string
   let hijriDay: number, hijriMonth: number, hijriYear: number, hijriMonthName: string
 
   if (city === 'london') {
@@ -192,25 +382,27 @@ const getPrayerData = async (city: string): Promise<PrayerData> => {
       { name: 'Isha',    time: t.isha },
     ]
     const hRes  = await fetchWithTimeout(
-      `https://api.aladhan.com/v1/timingsByCity/${dd}-${mm}-${yyyy}?city=London&country=United+Kingdom&method=1`
+      `https://api.aladhan.com/v1/timingsByCity?city=London&country=United+Kingdom&method=1`
     )
     const hData = await hRes.json()
     const hijri = hData.data.date.hijri
+    const greg  = hData.data.date.gregorian
     hijriDay   = parseInt(hijri.day)
     hijriMonth = parseInt(hijri.month.number)
     hijriYear  = parseInt(hijri.year)
     hijriMonthName = hijri.month.en
     hijriDate  = `${hijri.day} ${hijriMonthName} ${hijri.year} AH`
+    gregDate   = `${greg.weekday.en.slice(0,3)} ${greg.day} ${greg.month.en.slice(0,3)} ${greg.year}`
   } else {
     const cityName = city.charAt(0).toUpperCase() + city.slice(1)
     let res  = await fetchWithTimeout(
-      `https://api.aladhan.com/v1/timingsByCity/${dd}-${mm}-${yyyy}?city=${encodeURIComponent(cityName)}&method=1`
+      `https://api.aladhan.com/v1/timingsByCity?city=${encodeURIComponent(cityName)}&method=${method >= 0 ? method : 3}`
     )
     let data = await res.json()
 
     if (!data.data?.timings) {
       res  = await fetchWithTimeout(
-        `https://api.aladhan.com/v1/timingsByCity/${dd}-${mm}-${yyyy}?city=${encodeURIComponent(cityName)}&country=${encodeURIComponent(cityName)}&method=1`
+        `https://api.aladhan.com/v1/timingsByCity?city=${encodeURIComponent(cityName)}&country=${encodeURIComponent(cityName)}&method=${method >= 0 ? method : 3}`
       )
       data = await res.json()
     }
@@ -220,12 +412,14 @@ const getPrayerData = async (city: string): Promise<PrayerData> => {
     timezone  = data.data.meta?.timezone || 'UTC'
     const t   = data.data.timings
     const hijri = data.data.date.hijri
+    const greg  = data.data.date.gregorian
     cityLabel  = cityName
     hijriDay   = parseInt(hijri.day)
     hijriMonth = parseInt(hijri.month.number)
     hijriYear  = parseInt(hijri.year)
     hijriMonthName = hijri.month.en
     hijriDate  = `${hijri.day} ${hijriMonthName} ${hijri.year} AH`
+    gregDate   = `${greg.weekday.en.slice(0,3)} ${greg.day} ${greg.month.en.slice(0,3)} ${greg.year}`
     prayers = [
       { name: 'Fajr',    time: t.Fajr },
       { name: 'Sunrise', time: t.Sunrise },
@@ -278,7 +472,7 @@ const getPrayerData = async (city: string): Promise<PrayerData> => {
 //   Footer:  y 181–199 (hint text)
 //
 
-const renderMainScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] => {
+const renderMainScreen = async (data: PrayerData): Promise<[number[], number[], number[], number[]]> => {
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   const cityTime = getCityTime(data.timezone)
   const nowMins  = cityTime.getHours() * 60 + cityTime.getMinutes()
@@ -320,8 +514,22 @@ const renderMainScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8Array
     const isSunrise = p.name === 'Sunrise'
 
     if (isNext) {
+      // Full-row background highlight
       ctx.fillStyle = '#1e1600'
       ctx.fillRect(2, y - 1, IMG_W - 4, ROW_H)
+      // Arrow badge box on the far right
+      const BADGE_W = 18
+      const BADGE_X = IMG_W - 2 - BADGE_W
+      ctx.fillStyle = '#ffcc00'
+      ctx.beginPath()
+      ctx.roundRect(BADGE_X, y + 2, BADGE_W, ROW_H - 4, 3)
+      ctx.fill()
+      // Arrow glyph inside badge (black on yellow)
+      ctx.fillStyle = '#000'
+      ctx.font = '11px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('▶', BADGE_X + BADGE_W / 2, y + ROW_H / 2)
     }
 
     // Prayer name
@@ -330,31 +538,24 @@ const renderMainScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8Array
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
     ctx.fillText(p.name, 10, y + ROW_H / 2)
 
-    // Time
+    // Time — shift left to avoid the badge when isNext
+    const timeX = isNext ? IMG_W - 2 - 18 - 6 : TIME_X
     ctx.font = isNext ? FONT_BOLD : (isSunrise ? FONT_HEADER : FONT_BODY)
     ctx.fillStyle = isNext ? '#ffcc00' : (isSunrise ? '#444' : '#888')
     ctx.textAlign = 'right'
-    ctx.fillText(p.time, TIME_X - (isNext ? 18 : 0), y + ROW_H / 2)
-
-    // Next-prayer indicator arrow
-    if (isNext) {
-      ctx.fillStyle = '#ffcc00'
-      ctx.font = FONT_BOLD
-      ctx.textAlign = 'right'
-      ctx.fillText('▶', TIME_X, y + ROW_H / 2)
-    }
+    ctx.fillText(p.time, timeX, y + ROW_H / 2)
   })
 
   // ── Footer ───────────────────────────────────────────────────────────────────
   drawSeparator(ctx, IMG_H - 14)
   ctx.font = FONT_HINT; ctx.fillStyle = '#444'
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-  ctx.fillText('tap: next screen  |  double-tap: exit', IMG_W / 2, IMG_H - 2)
+  ctx.fillText('swipe: scroll  |  tap: next  |  2x: exit', IMG_W / 2, IMG_H - 2)
 
   return sliceQuadrants(canvas)
 }
 
-const renderCountdownScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] => {
+const renderCountdownScreen = async (data: PrayerData): Promise<[number[], number[], number[], number[]]> => {
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   const cityTime = getCityTime(data.timezone)
   const nowMins  = cityTime.getHours() * 60 + cityTime.getMinutes()
@@ -431,12 +632,12 @@ const renderCountdownScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8
   drawSeparator(ctx, IMG_H - 14)
   ctx.font = FONT_HINT; ctx.fillStyle = '#444'
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-  ctx.fillText('tap: next screen  |  double-tap: exit', IMG_W / 2, IMG_H - 2)
+  ctx.fillText('swipe: scroll  |  tap: next  |  2x: exit', IMG_W / 2, IMG_H - 2)
 
   return sliceQuadrants(canvas)
 }
 
-const renderCalendarScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] => {
+const renderCalendarScreen = async (data: PrayerData): Promise<[number[], number[], number[], number[]]> => {
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   const hm = data.hijriMonth
 
@@ -504,13 +705,13 @@ const renderCalendarScreen = (data: PrayerData): [Uint8Array, Uint8Array, Uint8A
     drawSeparator(ctx, sepY)
     ctx.font = FONT_HINT; ctx.fillStyle = '#444'
     ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-    ctx.fillText('tap: next screen  |  double-tap: exit', IMG_W / 2, IMG_H - 2)
+    ctx.fillText('swipe: scroll  |  tap: next  |  2x: exit', IMG_W / 2, IMG_H - 2)
   }
 
   return sliceQuadrants(canvas)
 }
 
-const renderLoadingScreen = (city: string): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] => {
+const renderLoadingScreen = async (city: string): Promise<[number[], number[], number[], number[]]> => {
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   ctx.font = 'bold 22px sans-serif'; ctx.fillStyle = '#fff'
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
@@ -525,10 +726,12 @@ const renderLoadingScreen = (city: string): [Uint8Array, Uint8Array, Uint8Array,
 let bridge: any = null
 let currentScreen: Screen = 'main'
 let cachedData: PrayerData | null = null
+let _savedCity   = 'london'
+let _savedMethod = -1
 
-let cachedMainTiles:      [Uint8Array, Uint8Array, Uint8Array, Uint8Array] | null = null
-let cachedCountdownTiles: [Uint8Array, Uint8Array, Uint8Array, Uint8Array] | null = null
-let cachedCalendarTiles:  [Uint8Array, Uint8Array, Uint8Array, Uint8Array] | null = null
+let cachedMainTiles:      [number[], number[], number[], number[]] | null = null
+let cachedCountdownTiles: [number[], number[], number[], number[]] | null = null
+let cachedCalendarTiles:  [number[], number[], number[], number[]] | null = null
 
 // ─── Container setup ──────────────────────────────────────────────────────────
 // G2: 4 image containers in a 2×2 grid centred on the 576×288 display
@@ -559,35 +762,34 @@ const initPage = async () => {
 
 // ─── Send tiles ───────────────────────────────────────────────────────────────
 
-const sendTiles = async (tiles: [Uint8Array, Uint8Array, Uint8Array, Uint8Array]) => {
+const sendTiles = async (tiles: [number[], number[], number[], number[]]) => {
   const [tl, tr, bl, br] = tiles
-  await Promise.all([
-    bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 1, containerName: 'quad_tl', imageData: tl })),
-    bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 2, containerName: 'quad_tr', imageData: tr })),
-    bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 3, containerName: 'quad_bl', imageData: bl })),
-    bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 4, containerName: 'quad_br', imageData: br })),
-  ])
+  // Sequential sends for iOS WKWebView BLE stability (parallel BLE calls crash on iOS)
+  await bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 1, containerName: 'quad_tl', imageData: tl }))
+  await bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 2, containerName: 'quad_tr', imageData: tr }))
+  await bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 3, containerName: 'quad_bl', imageData: bl }))
+  await bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: 4, containerName: 'quad_br', imageData: br }))
 }
 
 // ─── Main flow ────────────────────────────────────────────────────────────────
 
-const loadAndShow = async (city: string) => {
-  await sendTiles(renderLoadingScreen(city))
+const loadAndShow = async (city: string, method = -1) => {
+  await sendTiles(await renderLoadingScreen(city))
   try {
-    const data = await getPrayerData(city)
+    const data = await getPrayerData(city, method)
     cachedData           = data
     currentScreen        = 'main'
-    cachedMainTiles      = renderMainScreen(data)
-    cachedCountdownTiles = renderCountdownScreen(data)
-    cachedCalendarTiles  = renderCalendarScreen(data)
+    cachedMainTiles      = await renderMainScreen(data)
+    // Countdown is rendered on demand (always fresh) — skip at startup
+    cachedCountdownTiles = null
+    cachedCalendarTiles  = await renderCalendarScreen(data)
     await sendTiles(cachedMainTiles)
   } catch (e: any) {
     const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
     ctx.font = FONT_BODY; ctx.fillStyle = '#f66'
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     ctx.fillText(`Error: ${e.message}`, IMG_W / 2, IMG_H / 2)
-    const bytes = canvasToPngBytes(canvas)
-    await sendTiles([bytes, bytes, bytes, bytes])
+    await sendTiles(sliceQuadrants(canvas))
   }
 }
 
@@ -599,9 +801,7 @@ const scheduleNextMidnight = () => {
   const msUntil = tomorrow.getTime() - now.getTime()
   setTimeout(async () => {
     try {
-      const stored = await bridge.getLocalStorage('prayer_city')
-      const city   = (stored && stored.length > 0) ? stored.toLowerCase().trim() : 'london'
-      await loadAndShow(city)
+      await loadAndShow(_savedCity, _savedMethod)
     } catch (_) {}
     scheduleNextMidnight()
   }, msUntil)
@@ -652,19 +852,33 @@ const setupSettingsUI = () => {
   }
 
   ;(window as any).saveAndStart = async () => {
-    const city = cityInput.value.trim().toLowerCase()
+    const cityInput  = document.getElementById('cityInput')  as HTMLInputElement | null
+    const methodSel  = document.getElementById('methodSelect') as HTMLSelectElement | null
+    const city   = cityInput?.value.trim().toLowerCase() || ''
+    const method = methodSel ? parseInt(methodSel.value) : -1
     if (!city) return
     setLoading(true)
     try {
-      const data = await getPrayerData(city)
+      const data = await getPrayerData(city, method)
       if (bridge) {
         await bridge.setLocalStorage('prayer_city', city)
+        await bridge.setLocalStorage('prayer_method', String(method))
+        _savedCity   = city
+        _savedMethod = method
         cachedData           = data
         currentScreen        = 'main'
-        cachedMainTiles      = renderMainScreen(data)
-        cachedCountdownTiles = renderCountdownScreen(data)
-        cachedCalendarTiles  = renderCalendarScreen(data)
+        cachedMainTiles      = await renderMainScreen(data)
+        cachedCountdownTiles = null
+        cachedCalendarTiles  = await renderCalendarScreen(data)
         await sendTiles(cachedMainTiles)
+        // Update active screen button
+        const updateBtn = (scr: string) => {
+          ;['main','countdown','calendar'].forEach(s => {
+            const el = document.getElementById('btn-' + s)
+            if (el) el.classList.toggle('active', s === scr)
+          })
+        }
+        updateBtn('main')
       }
       updateInfo(data)
       setStatus(`✓ Showing ${data.cityLabel} on glasses!`, 'success')
@@ -678,27 +892,63 @@ const setupSettingsUI = () => {
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+;(window as any).noor = {
+  version: '1.3.8',
+  exit: () => { if (bridge) bridge.shutDownPageContainer(0) },
+  getMethod: () => _savedMethod,
+  getCity:   () => _savedCity,
+  switchScreen: (scr: string) => {
+    if (!cachedData) return
+    currentScreen = scr as Screen
+    enqueueRender(async () => {
+      if (!cachedData) return
+      if (scr === 'main') {
+        if (!cachedMainTiles) cachedMainTiles = await renderMainScreen(cachedData)
+        await sendTiles(cachedMainTiles!)
+      } else if (scr === 'countdown') {
+        cachedCountdownTiles = await renderCountdownScreen(cachedData)
+        await sendTiles(cachedCountdownTiles)
+      } else if (scr === 'calendar') {
+        if (!cachedCalendarTiles) cachedCalendarTiles = await renderCalendarScreen(cachedData)
+        await sendTiles(cachedCalendarTiles!)
+      }
+    })
+  },
+}
+
 ;(async () => {
   bridge = await waitForEvenAppBridge()
 
   bridge.onEvenHubEvent(async (event: any) => {
-    if (!cachedData) return
-
     const evType = resolveEventType(event)
+    if (!cachedData) return
     if (evType === null) return
 
-    // Single tap (0) → cycle screens
+    // Swipe left (2) or single tap (0) → next screen
+    // Swipe right (1) → previous screen
     // Double tap (3) → exit plugin
-    if (evType === 0) {
-      const idx     = SCREENS.indexOf(currentScreen)
-      const nextScr = SCREENS[(idx + 1) % SCREENS.length]
-      currentScreen = nextScr
-
-      if (nextScr === 'main'      && cachedMainTiles)      await sendTiles(cachedMainTiles)
-      if (nextScr === 'countdown' && cachedCountdownTiles) await sendTiles(cachedCountdownTiles)
-      if (nextScr === 'calendar'  && cachedCalendarTiles)  await sendTiles(cachedCalendarTiles)
+    const showScreen = (scr: Screen) => {
+      currentScreen = scr
+      enqueueRender(async () => {
+        if (scr === 'main' && cachedMainTiles) {
+          await sendTiles(cachedMainTiles)
+        } else if (scr === 'countdown' && cachedData) {
+          // Always re-render countdown so the time-until value is fresh
+          cachedCountdownTiles = await renderCountdownScreen(cachedData)
+          await sendTiles(cachedCountdownTiles)
+        } else if (scr === 'calendar' && cachedCalendarTiles) {
+          await sendTiles(cachedCalendarTiles)
+        }
+      })
+    }
+    if (evType === 0 || evType === 2) {
+      const idx = SCREENS.indexOf(currentScreen)
+      showScreen(SCREENS[(idx + 1) % SCREENS.length])
+    } else if (evType === 1) {
+      const idx = SCREENS.indexOf(currentScreen)
+      showScreen(SCREENS[(idx - 1 + SCREENS.length) % SCREENS.length])
     } else if (evType === 3) {
-      await bridge.shutDownPageContainer(0)
+      await bridge.shutDownPageContainer(1)
     }
   })
 
@@ -706,11 +956,17 @@ const setupSettingsUI = () => {
   await initPage()
 
   try {
-    const stored = await bridge.getLocalStorage('prayer_city')
-    const city   = (stored && stored.length > 0) ? stored.toLowerCase().trim() : 'london'
-    await loadAndShow(city)
+    const [storedCity, storedMethod] = await Promise.all([
+      bridge.getLocalStorage('prayer_city').catch(() => ''),
+      bridge.getLocalStorage('prayer_method').catch(() => ''),
+    ])
+    const city   = (storedCity && storedCity.length > 0) ? storedCity.toLowerCase().trim() : 'london'
+    const method = (storedMethod !== '' && storedMethod !== null) ? parseInt(storedMethod) : -1
+    _savedCity   = city
+    _savedMethod = method
+    await loadAndShow(city, method)
     scheduleNextMidnight()
   } catch (_) {
-    await loadAndShow('london')
+    await loadAndShow('london', -1)
   }
 })()
